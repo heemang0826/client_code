@@ -14,6 +14,10 @@ from yoloa.utils import mkdir, multiclass_nms, postprocess, preprocess
 from yoloa.classes import COCO_CLASSES
 from yoloa.visualize import vis
 from yoloa.camera_api import SensorRealsense
+from datetime import datetime
+
+home_dir = os.path.expanduser("~")
+current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
 def make_parser():
@@ -28,14 +32,14 @@ def make_parser():
     parser.add_argument(
         "-i",
         "--image_dir",
-        default="/home/clobot/YOLOX_inference/data/sample",
+        default=f"{home_dir}/YOLOX_inference/data/test",
         type=str,
     )
     parser.add_argument(
         "-f",
         "--folder_name",
         type=str,
-        default="sample",
+        default="test",
     )
     parser.add_argument(
         "-im",
@@ -62,14 +66,14 @@ def make_parser():
 
 
 class PerformanceLogger:
-    def __init__(self, log_file="resource_log.csv", interval=1):
+    def __init__(self, log_file="f./log/{current_time}_resource_log.csv", interval=1):
         self.log_file = log_file
         self.interval = interval
         self.running = False
         self.thread = None
         self.start_time = time.time()
-        self.metrics_records = []  # resource metrics 기록
-        self.time_records = []  # preprocess time, inference time 기록
+        self.metrics_records = []
+        self.time_records = []
 
     def _get_gpu_usage(self):
         try:
@@ -113,9 +117,11 @@ class PerformanceLogger:
                     net_recv,
                 ]
             )
+            print()
             print(
                 f"[{timestamp}] CPU: {cpu_usage}% | MEM: {mem_usage}% | GPU(Render): {gpu_render}% | GPU(Video): {gpu_video}% | Net TX: {net_sent} KB | Net RX: {net_recv} KB"
             )
+            print()
 
             time.sleep(self.interval)
 
@@ -145,7 +151,7 @@ class PerformanceLogger:
             writer.writerows(self.metrics_records)
         print(f"Resource log saved to {self.log_file}")
 
-        with open("time_log.csv", "w", newline="") as file:
+        with open(f"./log/{current_time}_time_log.csv", "w", newline="") as file:
             writer = csv.writer(file)
             writer.writerow(["Preprocessing_Time(ms)", "Inference_Time(ms)"])
             writer.writerows(self.time_records)
