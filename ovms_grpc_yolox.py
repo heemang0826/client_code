@@ -66,7 +66,7 @@ def make_parser():
 
 
 class PerformanceLogger:
-    def __init__(self, log_file="f./log/{current_time}_resource_log.csv", interval=1):
+    def __init__(self, log_file=f"./log/{current_time}_resource_log.csv", interval=1):
         self.log_file = log_file
         self.interval = interval
         self.running = False
@@ -135,7 +135,7 @@ class PerformanceLogger:
         if self.thread:
             self.thread.join()
 
-        with open(self.log_file, "w", newline="") as file:
+        with open(f"./log/{current_time}_resource_log.csv", "w", newline="") as file:
             writer = csv.writer(file)
             writer.writerow(
                 [
@@ -149,13 +149,13 @@ class PerformanceLogger:
                 ]
             )
             writer.writerows(self.metrics_records)
-        print(f"Resource log saved to {self.log_file}")
+        print(f"Resource log saved")
 
         with open(f"./log/{current_time}_time_log.csv", "w", newline="") as file:
             writer = csv.writer(file)
             writer.writerow(["Preprocessing_Time(ms)", "Inference_Time(ms)"])
             writer.writerows(self.time_records)
-        print(f"Time log saved to time_log.csv")
+        print("Time log saved")
 
     def log(self, prep_time, infer_time):
         self.time_records.append([prep_time, infer_time])
