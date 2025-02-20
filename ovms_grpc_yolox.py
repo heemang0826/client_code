@@ -1,20 +1,26 @@
-import psutil
-import time
+import argparse
+import copy
+import csv
+import os
 import subprocess
 import threading
-import csv
-import argparse
-import os
+import time
+from datetime import datetime
+
 import cv2
-import copy
 import numpy as np
 import tritonclient.grpc as grpcclient
 
-from yoloa.utils import mkdir, multiclass_nms, postprocess, preprocess
-from yoloa.classes import COCO_CLASSES
-from yoloa.visualize import vis
 from yoloa.camera_api import SensorRealsense
-from datetime import datetime
+from yoloa.classes import COCO_CLASSES
+from yoloa.utils import (
+    mkdir,
+    multiclass_nms,
+    postprocess,
+    preprocess,
+    convert_log_to_csv,
+)
+from yoloa.visualize import vis
 
 home_dir = os.path.expanduser("~")
 current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -22,7 +28,7 @@ current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 def make_parser():
     parser = argparse.ArgumentParser("openvino inference")
-    parser.add_argument("--url", type=str, default="localhost:9000")
+    parser.add_argument("--url", type=str, default="192.168.105.194:9000")
     parser.add_argument(
         "-m",
         "--model",
@@ -66,100 +72,63 @@ def make_parser():
 
 
 class PerformanceLogger:
-    def __init__(self, log_file=f"./log/{current_time}_resource_log.csv", interval=1):
-        self.log_file = log_file
-        self.interval = interval
+    def __init__(self):
+        self.proc = None
         self.running = False
         self.thread = None
-        self.start_time = time.time()
-        self.metrics_records = []
         self.time_records = []
 
-    def _get_gpu_usage(self):
-        try:
-            process = subprocess.Popen(
-                ["intel_gpu_top", "-l", "1"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            output, _ = process.communicate(timeout=1)
-            render_usage, video_usage = 0, 0
-            for line in output.split("\n"):
-                if "Render/3D" in line:
-                    render_usage = float(line.split()[1].replace("%", ""))
-                elif "Video" in line:
-                    video_usage = float(line.split()[1].replace("%", ""))
-            return render_usage, video_usage
-        except Exception:
-            return 0, 0
-
-    def _get_network_usage(self):
-        net_io = psutil.net_io_counters()
-        return net_io.bytes_sent / 1024, net_io.bytes_recv / 1024
+        # logging directories
+        self.temp_gpu_log = f"./{current_time}.txt"
+        self.gpu_log = f"./log/{current_time}_gpu_log.csv"
+        self.time_log = f"./log/{current_time}_time_log.csv"
 
     def _log_metrics(self):
+        cmd = ["sudo", "intel_gpu_top", "-s", "100"]
+        self.proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+
+        log_file = open(self.temp_gpu_log, "w")
+
         while self.running:
-            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-            cpu_usage = psutil.cpu_percent(interval=0.5)
-            mem_usage = psutil.virtual_memory().percent
-            gpu_render, gpu_video = self._get_gpu_usage()
-            net_sent, net_recv = self._get_network_usage()
+            output = self.proc.stdout.readline()
+            if output:
+                log_file.write(output)
+                log_file.flush()
 
-            self.metrics_records.append(
-                [
-                    timestamp,
-                    cpu_usage,
-                    mem_usage,
-                    gpu_render,
-                    gpu_video,
-                    net_sent,
-                    net_recv,
-                ]
-            )
-            print()
-            print(
-                f"[{timestamp}] CPU: {cpu_usage}% | MEM: {mem_usage}% | GPU(Render): {gpu_render}% | GPU(Video): {gpu_video}% | Net TX: {net_sent} KB | Net RX: {net_recv} KB"
-            )
-            print()
-
-            time.sleep(self.interval)
+        log_file.close()
 
     def start_logging(self):
         self.running = True
-        self.thread = threading.Thread(target=self._log_metrics)
+        self.thread = threading.Thread(target=self._log_metrics, daemon=True)
         self.thread.start()
 
     def stop_logging(self):
         self.running = False
-        if self.thread:
-            self.thread.join()
+        if self.proc:
+            self.proc.terminate()
+            # self.proc.wait()
 
-        with open(f"./log/{current_time}_resource_log.csv", "w", newline="") as file:
-            writer = csv.writer(file)
-            writer.writerow(
-                [
-                    "Timestamp",
-                    "CPU_Usage(%)",
-                    "Memory_Usage(%)",
-                    "GPU_Render(%)",
-                    "GPU_Video(%)",
-                    "Net_TX(KB)",
-                    "Net_RX(KB)",
-                ]
-            )
-            writer.writerows(self.metrics_records)
-        print(f"Resource log saved")
+        convert_log_to_csv(self.temp_gpu_log, self.gpu_log)
+        try:
+            os.remove(self.temp_gpu_log)
+        except FileNotFoundError:
+            print(f"{self.temp_gpu_log} not exists")
 
-        with open(f"./log/{current_time}_time_log.csv", "w", newline="") as file:
+        with open(self.time_log, "w", newline="") as file:
             writer = csv.writer(file)
             writer.writerow(["Preprocessing_Time(ms)", "Inference_Time(ms)"])
             writer.writerows(self.time_records)
-        print("Time log saved")
 
-    def log(self, prep_time, infer_time):
+        print(f"Saved log file: {self.time_log}")
+
+    def log(self, image_index, total_length, prep_time, infer_time):
         self.time_records.append([prep_time, infer_time])
-        print(f"[Preprocess Time: {prep_time} ms | Inference Time: {infer_time} ms")
+        print(
+            f"[{image_index} / {total_length}] Preprocess Time: {prep_time:.3f} ms | Inference Time: {infer_time:.3f} ms",
+            end="\r",
+        )
 
 
 def infer_image(client, model, input_path, output_path, input_shape, data_type):
@@ -253,9 +222,7 @@ def main():
     args = make_parser().parse_args()
     client = grpcclient.InferenceServerClient(url=args.url)
     input_shape = tuple(map(int, args.input_shape.split(",")))
-
     logger = PerformanceLogger()
-    logger.start_logging()
 
     if not (
         client.is_server_live()
@@ -263,7 +230,6 @@ def main():
         and client.is_model_ready(args.model)
     ):
         print("Triton server or model is not ready.")
-        logger.stop_logging()
         return
 
     model_metadata = client.get_model_metadata(args.model)
@@ -279,17 +245,20 @@ def main():
             if f.lower().endswith(("png", "jpg", "jpeg"))
         ]
 
+        logger.start_logging()
         total_prep_time, total_infer_time = 0, 0
-        for image_path in image_files:
+        for image_index, image_path in enumerate(image_files, start=1):
             prep_time, infer_time = infer_image(
                 client, args.model, image_path, output_path, input_shape, args.data_type
             )
             total_prep_time += prep_time
             total_infer_time += infer_time
-            logger.log(prep_time, infer_time)
+            logger.log(image_index, len(image_files), prep_time, infer_time)
 
         print(f"Avg preprocess time: {total_prep_time / len(image_files):.3f} ms")
         print(f"Avg inference time: {total_infer_time / len(image_files):.3f} ms")
+
+        logger.stop_logging()
 
     elif args.infer_mode == "cam":
         sensor = SensorRealsense()
@@ -303,8 +272,6 @@ def main():
             if cv2.waitKey(1) & 0xFF in [ord("q"), 27]:
                 cv2.destroyAllWindows()
                 break
-
-    logger.stop_logging()
 
 
 if __name__ == "__main__":

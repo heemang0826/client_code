@@ -1,10 +1,22 @@
 #!/usr/bin/env python3
 
 import os
-import random
-
+import csv
 import cv2
 import numpy as np
+
+
+def convert_log_to_csv(txt_file, csv_file):
+
+    with open(txt_file, "r") as infile, open(csv_file, "w", newline="") as outfile:
+        writer = csv.writer(outfile)
+
+        for line in infile:
+            columns = [col for col in line.strip().split() if col]
+            if columns:
+                writer.writerow(columns)
+
+    print(f"Saved log file: {csv_file}")
 
 
 def preprocess(img, input_size, swap=(2, 0, 1), to_byte=False):
