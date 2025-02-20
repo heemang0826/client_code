@@ -28,7 +28,7 @@ current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 def make_parser():
     parser = argparse.ArgumentParser("openvino inference")
-    parser.add_argument("--url", type=str, default="192.168.105.194:9000")
+    parser.add_argument("--url", type=str, default="localhost:9000")
     parser.add_argument(
         "-m",
         "--model",
@@ -126,8 +126,9 @@ class PerformanceLogger:
     def log(self, image_index, total_length, prep_time, infer_time):
         self.time_records.append([prep_time, infer_time])
         print(
-            f"[{image_index} / {total_length}] Preprocess Time: {prep_time:.3f} ms | Inference Time: {infer_time:.3f} ms",
-            end="\r",
+            f"\r[{image_index} / {total_length}] Preprocess Time: {prep_time:.3f} ms | Inference Time: {infer_time:.3f} ms\033[K",
+            end="",
+            flush=True,
         )
 
 
@@ -255,6 +256,7 @@ def main():
             total_infer_time += infer_time
             logger.log(image_index, len(image_files), prep_time, infer_time)
 
+        print()
         print(f"Avg preprocess time: {total_prep_time / len(image_files):.3f} ms")
         print(f"Avg inference time: {total_infer_time / len(image_files):.3f} ms")
 
