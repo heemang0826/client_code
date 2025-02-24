@@ -272,6 +272,7 @@ def main():
         print()
         print(f"Avg preprocess time: {total_prep_time / len(image_files):.3f} ms")
         print(f"Avg inference time: {total_infer_time / len(image_files):.3f} ms")
+        print(f"Avg postprocess time: {total_postp_time / len(image_files):.3f} ms")
 
         logger.stop_logging()
 
