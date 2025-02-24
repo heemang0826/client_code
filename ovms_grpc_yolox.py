@@ -61,7 +61,7 @@ def make_parser():
         default="416,416",
     )
     parser.add_argument(
-        "-dt",
+        "-d",
         "--data_type",
         type=str,
         default="FP32",

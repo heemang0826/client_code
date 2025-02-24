@@ -1,15 +1,16 @@
-import time
 import argparse
-import os
-import cv2
 import copy
+import os
+import time
+
+import cv2
 import numpy as np
 import tritonclient.grpc as grpcclient
 
-from yoloa.utils import mkdir, multiclass_nms, postprocess, preprocess
-from yoloa.classes import COCO_CLASSES
-from yoloa.visualize import vis
 from yoloa.camera_api import SensorRealsense
+from yoloa.classes import COCO_CLASSES
+from yoloa.utils import mkdir, multiclass_nms, postprocess, preprocess
+from yoloa.visualize import vis
 
 
 def make_parser():
@@ -19,35 +20,29 @@ def make_parser():
         "-m",
         "--model",
         type=str,
-        default="cham_v03_c12_yolox_t_detect_fp16_416x416",
+        default="cham_v04_c12_yolox_t_detect_fp16_416x416",
     )
     parser.add_argument(
         "-i",
         "--image_dir",
         type=str,
-        default="./data/clobot_office_pallet_pod_1459/office_1/image",
+        default="./data/test",
     )
     parser.add_argument(
         "-f",
         "--folder_name",
         type=str,
-        default="office_1_tiny",
+        default="test",
     )
     parser.add_argument(
         "-im",
         "--infer_mode",
         type=str,
-        default="cam",
+        default="img",
         choices=["img", "cam"],
     )
     parser.add_argument(
-        "-is",
-        "--input_shape",
-        type=str,
-        default="416,416",
-    )
-    parser.add_argument(
-        "-dt",
+        "-d",
         "--data_type",
         type=str,
         default="FP16",
@@ -57,7 +52,16 @@ def make_parser():
     return parser
 
 
-def infer_image(client, model_name, image_path, output_path, input_shape, data_type):
+def infer_image(
+    client,
+    model_name,
+    image_path,
+    output_path,
+    input_shape,
+    data_type,
+    image_id,
+    len_folder,
+):
     d_type = {"FP16": np.float16, "FP32": np.float32}[data_type]
     origin_img = cv2.imread(image_path)
     img, ratio = preprocess(origin_img, input_shape)
@@ -70,7 +74,10 @@ def infer_image(client, model_name, image_path, output_path, input_shape, data_t
     start_time = time.time()
     res = client.infer(model_name=model_name, inputs=[inputs], outputs=[outputs])
     end_time = time.time()
-    print(f"{image_path} inference time: {(end_time - start_time) * 1000:.3f} ms")
+    print(
+        f"\r{image_id} / {len_folder} inference time: {(end_time - start_time) * 1000:.3f} ms\033[K",
+        end="",
+    )
 
     res = res.as_numpy("output")
     res_copy = np.copy(res).astype(d_type)
@@ -85,7 +92,7 @@ def infer_image(client, model_name, image_path, output_path, input_shape, data_t
     boxes_xyxy[:, 3] = boxes[:, 1] + boxes[:, 3] / 2.0
     boxes_xyxy /= ratio
 
-    dets = multiclass_nms(boxes_xyxy, scores, nms_thr=0.7, score_thr=0.3)
+    dets = multiclass_nms(boxes_xyxy, scores, nms_thr=0.7, score_thr=0.6)
     if dets is not None:
         final_boxes, final_scores, final_cls_inds = dets[:, :4], dets[:, 4], dets[:, 5]
         origin_img = vis(
@@ -93,7 +100,7 @@ def infer_image(client, model_name, image_path, output_path, input_shape, data_t
             final_boxes,
             final_scores,
             final_cls_inds,
-            conf=0.3,
+            conf=0.6,
             class_names=COCO_CLASSES,
         )
 
@@ -144,7 +151,7 @@ def infer_camera(client, model_name, input, input_shape, data_type):
 def main():
     args = make_parser().parse_args()
     client = grpcclient.InferenceServerClient(url=args.url)
-    input_shape = tuple(map(int, args.input_shape.split(",")))
+    input_shape = tuple(map(int, args.model.split("_")[-1].split("x")))
 
     if not (
         client.is_server_live()
@@ -158,7 +165,7 @@ def main():
     print("model_metadata:", model_metadata)
 
     if args.infer_mode == "img":
-        output_path = f"./output/triton/{args.folder_name}"
+        output_path = f"./output/{args.folder_name}"
         mkdir(output_path)
 
         image_files = [
@@ -167,11 +174,19 @@ def main():
             if f.lower().endswith(("png", "jpg", "jpeg"))
         ]
 
-        for image_path in image_files:
+        for idx, image_path in enumerate(image_files, start=1):
             infer_image(
-                client, args.model, image_path, output_path, input_shape, args.data_type
+                client,
+                args.model,
+                image_path,
+                output_path,
+                input_shape,
+                args.data_type,
+                idx,
+                len(image_files),
             )
 
+        print()
         print("Inference completed for all images.")
 
     elif args.infer_mode == "cam":
