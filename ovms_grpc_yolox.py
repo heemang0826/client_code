@@ -118,15 +118,21 @@ class PerformanceLogger:
 
         with open(self.time_log, "w", newline="") as file:
             writer = csv.writer(file)
-            writer.writerow(["Preprocessing_Time(ms)", "Inference_Time(ms)"])
+            writer.writerow(
+                [
+                    "Preprocessing_Time(ms)",
+                    "Inference_Time(ms)",
+                    "Postprocessing_Time(ms)",
+                ]
+            )
             writer.writerows(self.time_records)
 
         print(f"Saved log file: {self.time_log}")
 
-    def log(self, image_index, total_length, prep_time, infer_time):
-        self.time_records.append([prep_time, infer_time])
+    def log(self, image_index, total_length, prep_time, infer_time, postp_time):
+        self.time_records.append([prep_time, infer_time, postp_time])
         print(
-            f"\r[{image_index} / {total_length}] Preprocess Time: {prep_time:.3f} ms | Inference Time: {infer_time:.3f} ms\033[K",
+            f"\r[{image_index} / {total_length}] Preprocess Time: {prep_time:.3f} ms | Inference Time: {infer_time:.3f} ms | Postprocess Time: {postp_time:.3f} ms\033[K",
             end="",
             flush=True,
         )
@@ -150,6 +156,7 @@ def infer_image(client, model, input_path, output_path, input_shape, data_type):
 
     res = res.as_numpy("output")
     res_copy = np.copy(res).astype(d_type)
+    postp_s = time.time()
     pred = postprocess(res_copy, input_shape)[0]
 
     boxes, scores = pred[:, :4], pred[:, 4:5] * pred[:, 5:]
@@ -175,8 +182,13 @@ def infer_image(client, model, input_path, output_path, input_shape, data_type):
 
     output_path = os.path.join(output_path, os.path.basename(input_path))
     cv2.imwrite(output_path, origin_img)
+    postp_e = time.time()
 
-    return (prep_e - prep_s) * 1000, (infer_e - infer_s) * 1000
+    return (
+        (prep_e - prep_s) * 1000,
+        (infer_e - infer_s) * 1000,
+        (postp_e - postp_s) * 1000,
+    )
 
 
 def infer_camera(client, model_name, input, input_shape, data_type):
@@ -247,14 +259,15 @@ def main():
         ]
 
         logger.start_logging()
-        total_prep_time, total_infer_time = 0, 0
+        total_prep_time, total_infer_time, total_postp_time = 0, 0, 0
         for image_index, image_path in enumerate(image_files, start=1):
-            prep_time, infer_time = infer_image(
+            prep_time, infer_time, postp_time = infer_image(
                 client, args.model, image_path, output_path, input_shape, args.data_type
             )
             total_prep_time += prep_time
             total_infer_time += infer_time
-            logger.log(image_index, len(image_files), prep_time, infer_time)
+            total_postp_time += postp_time
+            logger.log(image_index, len(image_files), prep_time, infer_time, postp_time)
 
         print()
         print(f"Avg preprocess time: {total_prep_time / len(image_files):.3f} ms")
