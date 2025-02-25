@@ -19,6 +19,8 @@ from yoloa.utils import (
     postprocess,
     preprocess,
     convert_log_to_csv,
+    calculate_avg_cpu_usage,
+    calculate_rcs0_average,
 )
 from yoloa.visualize import vis
 
@@ -73,31 +75,44 @@ def make_parser():
 
 class PerformanceLogger:
     def __init__(self):
-        self.proc = None
+        self.proc_gpu = None
+        self.proc_cpu = None
         self.running = False
         self.thread = None
         self.time_records = []
 
         # logging directories
-        self.temp_gpu_log = f"./{current_time}.txt"
+        self.temp_gpu_log = f"./{current_time}_gpu.txt"
+        self.temp_cpu_log = f"./{current_time}_cpu.txt"
         self.gpu_log = f"./log/{current_time}_gpu_log.csv"
+        self.cpu_log = f"./log/{current_time}_cpu_log.csv"
         self.time_log = f"./log/{current_time}_time_log.csv"
 
     def _log_metrics(self):
-        cmd = ["sudo", "intel_gpu_top", "-s", "100"]
-        self.proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        cmd_gpu = ["sudo", "intel_gpu_top", "-s", "100"]
+        cmd_cpu = ["mpstat", "-P", "ALL", "1"]
+        self.proc_gpu = subprocess.Popen(
+            cmd_gpu, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        self.proc_cpu = subprocess.Popen(
+            cmd_cpu, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
 
-        log_file = open(self.temp_gpu_log, "w")
+        log_gpu_file = open(self.temp_gpu_log, "w", newline="")
+        log_cpu_file = open(self.temp_cpu_log, "w", newline="")
 
         while self.running:
-            output = self.proc.stdout.readline()
-            if output:
-                log_file.write(output)
-                log_file.flush()
+            gpu_output = self.proc_gpu.stdout.readline()
+            cpu_output = self.proc_cpu.stdout.readline()
+            if gpu_output:
+                log_gpu_file.write(gpu_output)
+                log_gpu_file.flush()
+            if cpu_output:
+                log_cpu_file.write(cpu_output)
+                log_cpu_file.flush()
 
-        log_file.close()
+        log_gpu_file.close()
+        log_cpu_file.close()
 
     def start_logging(self):
         self.running = True
@@ -106,15 +121,17 @@ class PerformanceLogger:
 
     def stop_logging(self):
         self.running = False
-        if self.proc:
-            self.proc.terminate()
-            # self.proc.wait()
+        if self.proc_gpu:
+            self.proc_gpu.terminate()
+
+        if self.proc_cpu:
+            self.proc_cpu.terminate()
 
         convert_log_to_csv(self.temp_gpu_log, self.gpu_log)
-        try:
-            os.remove(self.temp_gpu_log)
-        except FileNotFoundError:
-            print(f"{self.temp_gpu_log} not exists")
+        convert_log_to_csv(self.temp_cpu_log, self.cpu_log)
+
+        os.remove(self.temp_gpu_log)
+        os.remove(self.temp_cpu_log)
 
         with open(self.time_log, "w", newline="") as file:
             writer = csv.writer(file)
@@ -128,6 +145,8 @@ class PerformanceLogger:
             writer.writerows(self.time_records)
 
         print(f"Saved log file: {self.time_log}")
+        print(f"Average CPU Usage: {calculate_avg_cpu_usage(self.cpu_log):.3f} %")
+        print(f"Average GPU Usage: {calculate_rcs0_average(self.gpu_log):.3f} %")
 
     def log(self, image_index, total_length, prep_time, infer_time, postp_time):
         self.time_records.append([prep_time, infer_time, postp_time])

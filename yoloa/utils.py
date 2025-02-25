@@ -19,6 +19,56 @@ def convert_log_to_csv(txt_file, csv_file):
     print(f"Saved log file: {csv_file}")
 
 
+def calculate_avg_cpu_usage(cpu_log):
+    total_usage = 0
+    count = 0
+
+    with open(cpu_log, "r") as file:
+        reader = csv.reader(file)
+        next(reader)
+
+        for row in reader:
+            print(row)
+            if row and row[2] == "all":
+                try:
+                    idle_percentage = float(row[-1])
+                    usage_percentage = 100 - idle_percentage
+                    total_usage += usage_percentage
+                    count += 1
+                except ValueError:
+                    continue
+
+    if count == 0:
+        return None
+
+    average_usage = total_usage / count
+    return average_usage
+
+
+def calculate_rcs0_average(gpu_log):
+    total_rcs0 = 0
+    count = 0
+
+    with open(gpu_log, "r") as file:
+        reader = csv.reader(file)
+        next(reader)
+
+        for row in reader:
+            if row and (row[0] != "Freq" or row[0] != "req"):
+                try:
+                    rcs0_value = float(row[5])
+                    total_rcs0 += rcs0_value
+                    count += 1
+                except ValueError:
+                    continue
+
+    if count == 0:
+        return None
+
+    average_rcs0 = total_rcs0 / count
+    return average_rcs0
+
+
 def preprocess(img, input_size, swap=(2, 0, 1), to_byte=False):
     if len(img.shape) == 3:
         padded_img = np.ones((input_size[0], input_size[1], 3), dtype=np.uint8) * 114
