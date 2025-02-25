@@ -28,7 +28,6 @@ def calculate_avg_cpu_usage(cpu_log):
         next(reader)
 
         for row in reader:
-            print(row)
             if row and row[2] == "all":
                 try:
                     idle_percentage = float(row[-1])
@@ -56,7 +55,7 @@ def calculate_rcs0_average(gpu_log):
         for row in reader:
             if row and (row[0] != "Freq" or row[0] != "req"):
                 try:
-                    rcs0_value = float(row[5])
+                    rcs0_value = float(row[6])
                     total_rcs0 += rcs0_value
                     count += 1
                 except ValueError:

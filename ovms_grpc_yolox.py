@@ -40,7 +40,7 @@ def make_parser():
     parser.add_argument(
         "-i",
         "--image_dir",
-        default=f"{home_dir}/YOLOX_inference/data/test",
+        default=f"{home_dir}/client_code/data/test",
         type=str,
     )
     parser.add_argument(
