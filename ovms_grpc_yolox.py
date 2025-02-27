@@ -35,7 +35,7 @@ def make_parser():
         "-m",
         "--model",
         type=str,
-        default="yolox_tiny_coco80_ov_fp32",
+        default="ensemble_yolox_tiny_coco80",
     )
     parser.add_argument(
         "-i",
@@ -81,7 +81,6 @@ class PerformanceLogger:
         self.thread = None
         self.time_records = []
 
-        # logging directories
         self.temp_gpu_log = f"./{current_time}_gpu.txt"
         self.temp_cpu_log = f"./{current_time}_cpu.txt"
         self.gpu_log = f"./log/{current_time}_gpu_log.csv"
@@ -148,10 +147,10 @@ class PerformanceLogger:
         print(f"Average CPU Usage: {calculate_avg_cpu_usage(self.cpu_log):.3f} %")
         print(f"Average GPU Usage: {calculate_rcs0_average(self.gpu_log):.3f} %")
 
-    def log(self, image_index, total_length, prep_time, infer_time, postp_time):
-        self.time_records.append([prep_time, infer_time, postp_time])
+    def log(self, image_index, total_length, infer_time):
+        self.time_records.append([infer_time])
         print(
-            f"\r[{image_index} / {total_length}] Preprocess Time: {prep_time:.3f} ms | Inference Time: {infer_time:.3f} ms | Postprocess Time: {postp_time:.3f} ms\033[K",
+            f"\r[{image_index} / {total_length}] | Inference Time: {infer_time:.3f} ms\033[K",
             end="",
             flush=True,
         )
@@ -159,55 +158,60 @@ class PerformanceLogger:
 
 def infer_image(client, model, input_path, output_path, input_shape, data_type):
     d_type = {"FP16": np.float16, "FP32": np.float32}[data_type]
-    prep_s = time.time()
-    origin_img = cv2.imread(input_path)
-    img, ratio = preprocess(origin_img, input_shape)
-    img = img[None, :, :, :].astype(d_type)
-    prep_e = time.time()
+    origin_img = cv2.imread(input_path).astype(np.float32)
+    img = origin_img[None, :, :, :].astype(d_type)
 
-    inputs = grpcclient.InferInput("images", img.shape, datatype=data_type)
+    # preproc_s = time.time()
+    # img, ratio = preprocess(origin_img, input_shape)
+    # img = img[None, :, :, :].astype(d_type)
+    # preproc_e = time.time()
+
+    inputs = grpcclient.InferInput("input_images", img.shape, datatype=data_type)
     inputs.set_data_from_numpy(img)
-    outputs = grpcclient.InferRequestedOutput("output")
+    outputs = grpcclient.InferRequestedOutput("output_results")
 
     infer_s = time.time()
     res = client.infer(model_name=model, inputs=[inputs], outputs=[outputs])
     infer_e = time.time()
 
-    res = res.as_numpy("output")
+    res = res.as_numpy("output_results")
     res_copy = np.copy(res).astype(d_type)
-    postp_s = time.time()
-    pred = postprocess(res_copy, input_shape)[0]
 
-    boxes, scores = pred[:, :4], pred[:, 4:5] * pred[:, 5:]
+    # postproc_s = time.time()
+    # pred = postprocess(res_copy, input_shape)[0]
+    # boxes, scores = pred[:, :4], pred[:, 4:5] * pred[:, 5:]
+    # boxes_xyxy = np.ones_like(boxes)
+    # boxes_xyxy[:, 0] = boxes[:, 0] - boxes[:, 2] / 2.0
+    # boxes_xyxy[:, 1] = boxes[:, 1] - boxes[:, 3] / 2.0
+    # boxes_xyxy[:, 2] = boxes[:, 0] + boxes[:, 2] / 2.0
+    # boxes_xyxy[:, 3] = boxes[:, 1] + boxes[:, 3] / 2.0
+    # boxes_xyxy /= ratio
 
-    boxes_xyxy = np.ones_like(boxes)
-    boxes_xyxy[:, 0] = boxes[:, 0] - boxes[:, 2] / 2.0
-    boxes_xyxy[:, 1] = boxes[:, 1] - boxes[:, 3] / 2.0
-    boxes_xyxy[:, 2] = boxes[:, 0] + boxes[:, 2] / 2.0
-    boxes_xyxy[:, 3] = boxes[:, 1] + boxes[:, 3] / 2.0
-    boxes_xyxy /= ratio
+    # dets = multiclass_nms(boxes_xyxy, scores, nms_thr=0.45, score_thr=0.3)
+    # if dets is not None:
+    #     final_boxes, final_scores, final_cls_inds = dets[:, :4], dets[:, 4], dets[:, 5]
+    #     origin_img = vis(
+    #         origin_img,
+    #         final_boxes,
+    #         final_scores,
+    #         final_cls_inds,
+    #         conf=0.3,
+    #         class_names=COCO_CLASSES,
+    #     )
+    # postproc_e = time.time()
 
-    dets = multiclass_nms(boxes_xyxy, scores, nms_thr=0.45, score_thr=0.3)
-    if dets is not None:
-        final_boxes, final_scores, final_cls_inds = dets[:, :4], dets[:, 4], dets[:, 5]
+    if len(res_copy) != 0:
+        class_id = res_copy[:, 0]
+        score = res_copy[:, 1]
+        box_coord = res_copy[:, 2:6]
         origin_img = vis(
-            origin_img,
-            final_boxes,
-            final_scores,
-            final_cls_inds,
-            conf=0.3,
-            class_names=COCO_CLASSES,
+            origin_img, box_coord, score, class_id, conf=0.3, class_names=COCO_CLASSES
         )
 
     output_path = os.path.join(output_path, os.path.basename(input_path))
     cv2.imwrite(output_path, origin_img)
-    postp_e = time.time()
 
-    return (
-        (prep_e - prep_s) * 1000,
-        (infer_e - infer_s) * 1000,
-        (postp_e - postp_s) * 1000,
-    )
+    return (infer_e - infer_s) * 1000
 
 
 def infer_camera(client, model_name, input, input_shape, data_type):
@@ -278,22 +282,19 @@ def main():
         ]
 
         logger.start_logging()
-        total_prep_time, total_infer_time, total_postp_time = 0, 0, 0
+        total_preproc_time, total_infer_time, total_postproc_time = 0, 0, 0
         for image_index, image_path in enumerate(image_files, start=1):
-            prep_time, infer_time, postp_time = infer_image(
+            infer_time = infer_image(
                 client, args.model, image_path, output_path, input_shape, args.data_type
             )
-            total_prep_time += prep_time
             total_infer_time += infer_time
-            total_postp_time += postp_time
-            logger.log(image_index, len(image_files), prep_time, infer_time, postp_time)
-
-        print()
-        print(f"Avg preprocess time: {total_prep_time / len(image_files):.3f} ms")
-        print(f"Avg inference time: {total_infer_time / len(image_files):.3f} ms")
-        print(f"Avg postprocess time: {total_postp_time / len(image_files):.3f} ms")
+            logger.log(image_index, len(image_files), infer_time)
 
         logger.stop_logging()
+
+        # print(f"Avg preprocess time: {total_preproc_time / len(image_files):.3f} ms")
+        print(f"Avg inference time: {total_infer_time / len(image_files):.3f} ms")
+        # print(f"Avg postprocess time: {total_postproc_time / len(image_files):.3f} ms")
 
     elif args.infer_mode == "cam":
         sensor = SensorRealsense()
