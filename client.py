@@ -172,19 +172,21 @@ tracker = BYTETracker(tracker_args)
 def infer_image(client, model, input_path, output_path, model_shape, data_type):
     d_type = {"FP16": np.float16, "FP32": np.float32}[data_type]
     origin_img = cv2.imread(input_path).astype(np.float32)
-    img = origin_img[None, :, :, :].astype(d_type)
+    image_byte = cv2.imencode(".jpg", origin_img)[1].tobytes()
+    
+    inputs = []
+    inputs.append(grpcclient.InferInput("input_images", [1], "BYTES"))
+    img_byte = np.array([image_byte], dtype=np.object_)
+    inputs[0].set_data_from_numpy(img_byte)
+    outputs = grpcclient.InferRequestedOutput("output_results")
 
     # preproc_s = time.time()
     # img, ratio = preprocess(origin_img, input_shape)
     # img = img[None, :, :, :].astype(d_type)
     # preproc_e = time.time()
 
-    inputs = grpcclient.InferInput("input_images", img.shape, datatype=data_type)
-    inputs.set_data_from_numpy(img)
-    outputs = grpcclient.InferRequestedOutput("output_results")
-
     infer_s = time.time()
-    res = client.infer(model_name=model, inputs=[inputs], outputs=[outputs])
+    res = client.infer(model_name=model, inputs=inputs, outputs=[outputs])
     infer_e = time.time()
 
     res = res.as_numpy("output_results")
@@ -218,10 +220,10 @@ def infer_image(client, model, input_path, output_path, model_shape, data_type):
         score = res_copy[:, 1]
         box_coord = res_copy[:, 2:6]
         bytetrack_input = np.hstack([box_coord, score.reshape(-1, 1)])
-        bytetrack_output = tracker.update(bytetrack_input, model_shape, (480, 640))
-        _box_coord = np.array([bo.tlbr for bo in bytetrack_output])
-        _score = np.array([bo.score for bo in bytetrack_output])
-        _class_id = np.array([bo.track_id for bo in bytetrack_output])
+        # bytetrack_output = tracker.update(bytetrack_input, model_shape, (480, 640))
+        # _box_coord = np.array([bo.tlbr for bo in bytetrack_output])
+        # _score = np.array([bo.score for bo in bytetrack_output])
+        # _class_id = np.array([bo.track_id for bo in bytetrack_output])
         origin_img = vis(
             origin_img, box_coord, score, class_id, conf=0.3, class_names=COCO_CLASSES
         )
