@@ -11,26 +11,30 @@ import cv2
 import numpy as np
 import tritonclient.grpc as grpcclient
 
-from yoloa.camera_api import SensorRealsense
-from yoloa.classes import COCO_CLASSES
-from yoloa.utils import (
+from tracker.byte_tracker import BYTETracker
+from utils.camera_api import SensorRealsense
+from utils.classes import COCO_CLASSES
+from utils.tools import (
+    calculate_avg_cpu_usage,
+    calculate_rcs0_average,
+    convert_log_to_csv,
     mkdir,
     multiclass_nms,
     postprocess,
     preprocess,
-    convert_log_to_csv,
-    calculate_avg_cpu_usage,
-    calculate_rcs0_average,
 )
-from yoloa.visualize import vis
+from utils.visualize import vis
 
 home_dir = os.path.expanduser("~")
 current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+OVMS_URL = "192.168.105.194:9000"
+TRITON_URL = "192.168.105.190:8001"
+
 
 def make_parser():
     parser = argparse.ArgumentParser("openvino inference")
-    parser.add_argument("--url", type=str, default="localhost:9000")
+    parser.add_argument("--url", type=str, default=OVMS_URL)
     parser.add_argument(
         "-m",
         "--model",
@@ -57,13 +61,13 @@ def make_parser():
         choices=["img", "cam"],
     )
     parser.add_argument(
-        "-is",
-        "--input_shape",
+        "-ms",
+        "--model_shape",
         type=str,
         default="416,416",
     )
     parser.add_argument(
-        "-d",
+        "-dt",
         "--data_type",
         type=str,
         default="FP32",
@@ -156,7 +160,16 @@ class PerformanceLogger:
         )
 
 
-def infer_image(client, model, input_path, output_path, input_shape, data_type):
+""" setting tracker """
+tracker_args = argparse.Namespace()
+tracker_args.track_thresh = 0.5
+tracker_args.track_buffer = 30
+tracker_args.mot20 = False
+tracker_args.match_thresh = 0.8
+tracker = BYTETracker(tracker_args)
+
+
+def infer_image(client, model, input_path, output_path, model_shape, data_type):
     d_type = {"FP16": np.float16, "FP32": np.float32}[data_type]
     origin_img = cv2.imread(input_path).astype(np.float32)
     img = origin_img[None, :, :, :].astype(d_type)
@@ -204,6 +217,11 @@ def infer_image(client, model, input_path, output_path, input_shape, data_type):
         class_id = res_copy[:, 0]
         score = res_copy[:, 1]
         box_coord = res_copy[:, 2:6]
+        bytetrack_input = np.hstack([box_coord, score.reshape(-1, 1)])
+        bytetrack_output = tracker.update(bytetrack_input, model_shape, (480, 640))
+        _box_coord = np.array([bo.tlbr for bo in bytetrack_output])
+        _score = np.array([bo.score for bo in bytetrack_output])
+        _class_id = np.array([bo.track_id for bo in bytetrack_output])
         origin_img = vis(
             origin_img, box_coord, score, class_id, conf=0.3, class_names=COCO_CLASSES
         )
@@ -257,7 +275,7 @@ def infer_camera(client, model_name, input, input_shape, data_type):
 def main():
     args = make_parser().parse_args()
     client = grpcclient.InferenceServerClient(url=args.url)
-    input_shape = tuple(map(int, args.input_shape.split(",")))
+    model_shape = tuple(map(int, args.model_shape.split(",")))
     logger = PerformanceLogger()
 
     if not (
@@ -282,10 +300,12 @@ def main():
         ]
 
         logger.start_logging()
-        total_preproc_time, total_infer_time, total_postproc_time = 0, 0, 0
+        # total_preproc_time = 0
+        total_infer_time = 0
+        # total_postproc_time = 0
         for image_index, image_path in enumerate(image_files, start=1):
             infer_time = infer_image(
-                client, args.model, image_path, output_path, input_shape, args.data_type
+                client, args.model, image_path, output_path, model_shape, args.data_type
             )
             total_infer_time += infer_time
             logger.log(image_index, len(image_files), infer_time)
@@ -301,7 +321,7 @@ def main():
         while True:
             input = sensor.get_video_from_pipeline()[1][0]
             output = infer_camera(
-                client, args.model, input, input_shape, args.data_type
+                client, args.model, input, model_shape, args.data_type
             )
             cv2.namedWindow("camera viewer", cv2.WINDOW_NORMAL)
             cv2.imshow("camera viewer", output)
