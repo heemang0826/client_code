@@ -12,6 +12,7 @@ import numpy as np
 import tritonclient.grpc as grpcclient
 
 from tracker.byte_tracker import BYTETracker
+
 from utils.camera_api import SensorRealsense
 from utils.classes import COCO_CLASSES
 from utils.tools import (
@@ -25,6 +26,7 @@ from utils.tools import (
 )
 from utils.visualize import vis
 
+
 home_dir = os.path.expanduser("~")
 current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -33,46 +35,23 @@ TRITON_URL = "192.168.105.190:8001"
 
 
 def make_parser():
-    parser = argparse.ArgumentParser("openvino inference")
-    parser.add_argument("--url", type=str, default=OVMS_URL)
-    parser.add_argument(
-        "-m",
-        "--model",
-        type=str,
-        default="ensemble_yolox_tiny_coco80",
-    )
-    parser.add_argument(
-        "-i",
-        "--image_dir",
-        default=f"{home_dir}/client_code/data/test",
-        type=str,
-    )
-    parser.add_argument(
-        "-f",
-        "--folder_name",
-        type=str,
-        default="test",
-    )
-    parser.add_argument(
-        "-im",
-        "--infer_mode",
-        type=str,
-        default="img",
-        choices=["img", "cam"],
-    )
-    parser.add_argument(
-        "-ms",
-        "--model_shape",
-        type=str,
-        default="416,416",
-    )
-    parser.add_argument(
-        "-dt",
-        "--data_type",
-        type=str,
-        default="FP32",
-        choices=["FP16", "FP32"],
-    )
+    parser = argparse.ArgumentParser()
+
+    # 기본 설정
+    parser.add_argument("--url", default=OVMS_URL)
+    parser.add_argument("--model", default="ensemble_yolox_tiny_coco80")
+
+    # 데이터 및 경로 관련
+    parser.add_argument("--input_path", default=f"{home_dir}/client_code/data/test")
+    parser.add_argument("--output_path", default="test")
+
+    # 모델 및 추론 설정
+    parser.add_argument("--model_shape", default="416,416")
+    parser.add_argument("--infer_mode", choices=["img", "cam"], default="img")
+    parser.add_argument("--data_type", choices=["FP16", "FP32"], default="FP32")
+
+    # 기타 옵션
+    parser.add_argument("--logging", action="store_true")
 
     return parser
 
@@ -173,15 +152,14 @@ def infer_image(client, model, input_path, output_path, model_shape, data_type):
     d_type = {"FP16": np.float16, "FP32": np.float32}[data_type]
     origin_img = cv2.imread(input_path).astype(np.float32)
     image_byte = cv2.imencode(".jpg", origin_img)[1].tobytes()
-    
-    inputs = []
-    inputs.append(grpcclient.InferInput("input_images", [1], "BYTES"))
-    img_byte = np.array([image_byte], dtype=np.object_)
-    inputs[0].set_data_from_numpy(img_byte)
+    img_bt = np.array([image_byte], dtype=np.object_)
+
+    inputs = [grpcclient.InferInput("input_images", [1], "BYTES")]
+    inputs[0].set_data_from_numpy(img_bt)
     outputs = grpcclient.InferRequestedOutput("output_results")
 
     # preproc_s = time.time()
-    # img, ratio = preprocess(origin_img, input_shape)
+    # img, ratio = preprocess(origin_img, model_shape)
     # img = img[None, :, :, :].astype(d_type)
     # preproc_e = time.time()
 
@@ -193,7 +171,7 @@ def infer_image(client, model, input_path, output_path, model_shape, data_type):
     res_copy = np.copy(res).astype(d_type)
 
     # postproc_s = time.time()
-    # pred = postprocess(res_copy, input_shape)[0]
+    # pred = postprocess(res_copy, model_shape)[0]
     # boxes, scores = pred[:, :4], pred[:, 4:5] * pred[:, 5:]
     # boxes_xyxy = np.ones_like(boxes)
     # boxes_xyxy[:, 0] = boxes[:, 0] - boxes[:, 2] / 2.0
@@ -220,12 +198,17 @@ def infer_image(client, model, input_path, output_path, model_shape, data_type):
         score = res_copy[:, 1]
         box_coord = res_copy[:, 2:6]
         bytetrack_input = np.hstack([box_coord, score.reshape(-1, 1)])
-        # bytetrack_output = tracker.update(bytetrack_input, model_shape, (480, 640))
-        # _box_coord = np.array([bo.tlbr for bo in bytetrack_output])
-        # _score = np.array([bo.score for bo in bytetrack_output])
-        # _class_id = np.array([bo.track_id for bo in bytetrack_output])
+        bytetrack_output = tracker.update(bytetrack_input)
+        _box_coord = np.array([bo.tlbr for bo in bytetrack_output])
+        _score = np.array([bo.score for bo in bytetrack_output])
+        _class_id = np.array([bo.track_id for bo in bytetrack_output])
         origin_img = vis(
-            origin_img, box_coord, score, class_id, conf=0.3, class_names=COCO_CLASSES
+            origin_img,
+            _box_coord,
+            _score,
+            _class_id,
+            conf=0.3,
+            class_names=COCO_CLASSES,
         )
 
     output_path = os.path.join(output_path, os.path.basename(input_path))
@@ -234,9 +217,9 @@ def infer_image(client, model, input_path, output_path, model_shape, data_type):
     return (infer_e - infer_s) * 1000
 
 
-def infer_camera(client, model_name, input, input_shape, data_type):
+def infer_camera(client, model_name, input, model_shape, data_type):
     d_type = {"FP16": np.float16, "FP32": np.float32}[data_type]
-    img, ratio = preprocess(input, input_shape)
+    img, ratio = preprocess(input, model_shape)
     img = img[None, :, :, :].astype(d_type)
 
     inputs = grpcclient.InferInput("images", [1, 3, 416, 416], datatype=data_type)
@@ -247,7 +230,7 @@ def infer_camera(client, model_name, input, input_shape, data_type):
     res = res.as_numpy("output")
     res_copy = np.copy(res).astype(d_type)
 
-    pred = postprocess(res_copy, input_shape)[0]
+    pred = postprocess(res_copy, model_shape)[0]
 
     boxes, scores = pred[:, :4], pred[:, 4:5] * pred[:, 5:]
     boxes_xyxy = np.ones_like(boxes)
@@ -278,7 +261,7 @@ def main():
     args = make_parser().parse_args()
     client = grpcclient.InferenceServerClient(url=args.url)
     model_shape = tuple(map(int, args.model_shape.split(",")))
-    logger = PerformanceLogger()
+    logger = PerformanceLogger() if args.logging else None
 
     if not (
         client.is_server_live()
@@ -292,27 +275,35 @@ def main():
     print("model_metadata:", model_metadata)
 
     if args.infer_mode == "img":
-        output_path = f"./output/{args.folder_name}"
+        output_path = f"./output/{args.output_path}"
         mkdir(output_path)
 
-        image_files = [
-            os.path.join(args.image_dir, f)
-            for f in os.listdir(args.image_dir)
-            if f.lower().endswith(("png", "jpg", "jpeg"))
-        ]
+        image_files = sorted(
+            [
+                os.path.join(args.input_path, f)
+                for f in os.listdir(args.input_path)
+                if f.lower().endswith(("png", "jpg", "jpeg"))
+            ]
+        )
 
-        logger.start_logging()
+        if logger:
+            logger.start_logging()
+
         # total_preproc_time = 0
         total_infer_time = 0
         # total_postproc_time = 0
+
         for image_index, image_path in enumerate(image_files, start=1):
             infer_time = infer_image(
                 client, args.model, image_path, output_path, model_shape, args.data_type
             )
             total_infer_time += infer_time
-            logger.log(image_index, len(image_files), infer_time)
 
-        logger.stop_logging()
+            if logger:
+                logger.log(image_index, len(image_files), infer_time)
+
+        if logger:
+            logger.stop_logging()
 
         # print(f"Avg preprocess time: {total_preproc_time / len(image_files):.3f} ms")
         print(f"Avg inference time: {total_infer_time / len(image_files):.3f} ms")
