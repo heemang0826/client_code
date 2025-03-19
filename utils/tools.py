@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 
-import os
 import csv
+import os
+
 import cv2
 import numpy as np
 
@@ -15,8 +16,6 @@ def convert_log_to_csv(txt_file, csv_file):
             columns = [col for col in line.strip().split() if col]
             if columns:
                 writer.writerow(columns)
-
-    print(f"Saved log file: {csv_file}")
 
 
 def calculate_avg_cpu_usage(cpu_log):
@@ -40,11 +39,10 @@ def calculate_avg_cpu_usage(cpu_log):
     if count == 0:
         return None
 
-    average_usage = total_usage / count
-    return average_usage
+    return total_usage / count if count > 0 else None
 
 
-def calculate_rcs0_average(gpu_log):
+def calculate_avg_gpu_usage(gpu_log):
     total_rcs0 = 0
     count = 0
 
@@ -64,8 +62,7 @@ def calculate_rcs0_average(gpu_log):
     if count == 0:
         return None
 
-    average_rcs0 = total_rcs0 / count
-    return average_rcs0
+    return total_rcs0 / count if count > 0 else None
 
 
 def preprocess(img, input_size, swap=(2, 0, 1), to_byte=False):

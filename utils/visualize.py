@@ -5,14 +5,16 @@ import cv2
 import numpy as np
 
 
-def vis(img, boxes, scores, cls_ids, conf=0.3, class_names=None):
+def vis(img, boxes, scores, cls_ids, track_ids, conf=0.3, class_names=None):
 
     if boxes is not None and scores is not None and cls_ids is not None:
 
         for i in range(len(boxes)):
             box = boxes[i]
-            cls_id = int(cls_ids[i])
             score = scores[i]
+            cls_id = int(cls_ids[i])
+            if track_ids:
+                track_id = int(track_ids[i])
             if score < conf:
                 continue
             x0 = int(box[0])
@@ -21,7 +23,12 @@ def vis(img, boxes, scores, cls_ids, conf=0.3, class_names=None):
             y1 = int(box[3])
 
             color = (_COLORS[cls_id] * 255).astype(np.uint8).tolist()
-            text = "{}:{:.1f}%".format(class_names[cls_id], score * 100)
+            if track_ids:
+                text = "{}:{:.1f}% | tracklet {}".format(
+                    class_names[cls_id], score * 100, track_id
+                )
+            else:
+                text = "{}:{:.1f}%".format(class_names[cls_id], score * 100)
             txt_color = (0, 0, 0) if np.mean(_COLORS[cls_id]) > 0.5 else (255, 255, 255)
             font = cv2.FONT_HERSHEY_SIMPLEX
 

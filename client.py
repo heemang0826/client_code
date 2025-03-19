@@ -6,6 +6,7 @@ import subprocess
 import threading
 import time
 from datetime import datetime
+from dotenv import load_dotenv
 
 import cv2
 import numpy as np
@@ -17,7 +18,7 @@ from utils.camera_api import SensorRealsense
 from utils.classes import COCO_CLASSES
 from utils.tools import (
     calculate_avg_cpu_usage,
-    calculate_rcs0_average,
+    calculate_avg_gpu_usage,
     convert_log_to_csv,
     mkdir,
     multiclass_nms,
@@ -27,11 +28,18 @@ from utils.tools import (
 from utils.visualize import vis
 
 
+TRITON_URL = "192.168.105.190:8001"
+OVMS_URL = "192.168.105.194:9000"
+
 home_dir = os.path.expanduser("~")
 current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-OVMS_URL = "192.168.105.194:9000"
-TRITON_URL = "192.168.105.190:8001"
+load_dotenv("tracker_config.env")
+tracker_args = argparse.Namespace()
+tracker_args.track_thresh = float(os.getenv("TRACK_THRESH", 0.5))
+tracker_args.track_buffer = int(os.getenv("TRACK_BUFFER", 30))
+tracker_args.mot20 = os.getenv("MOT20", "False").lower() == "true"
+tracker_args.match_thresh = float(os.getenv("MATCH_THRESH", 0.7))
 
 
 def make_parser():
@@ -42,8 +50,11 @@ def make_parser():
     parser.add_argument("--model", default="ensemble_yolox_tiny_coco80")
 
     # 데이터 및 경로 관련
-    parser.add_argument("--input_path", default=f"{home_dir}/client_code/data/test")
-    parser.add_argument("--output_path", default="test")
+    parser.add_argument(
+        "--input_path",
+        default=f"{home_dir}/client_code/data/clobot_office_pallet_pod_1459/office_1/image",
+    )
+    parser.add_argument("--output_path", default="temp")
 
     # 모델 및 추론 설정
     parser.add_argument("--model_shape", default="416,416")
@@ -51,7 +62,8 @@ def make_parser():
     parser.add_argument("--data_type", choices=["FP16", "FP32"], default="FP32")
 
     # 기타 옵션
-    parser.add_argument("--logging", action="store_true")
+    parser.add_argument("--logger", action="store_true", default=True)
+    parser.add_argument("--tracker", action="store_true", default=True)
 
     return parser
 
@@ -119,36 +131,33 @@ class PerformanceLogger:
             writer = csv.writer(file)
             writer.writerow(
                 [
-                    "Preprocessing_Time(ms)",
+                    # "Preprocessing_Time(ms)",
                     "Inference_Time(ms)",
-                    "Postprocessing_Time(ms)",
+                    # "Postprocessing_Time(ms)",
                 ]
             )
             writer.writerows(self.time_records)
 
-        print(f"Saved log file: {self.time_log}")
-        print(f"Average CPU Usage: {calculate_avg_cpu_usage(self.cpu_log):.3f} %")
-        print(f"Average GPU Usage: {calculate_rcs0_average(self.gpu_log):.3f} %")
+        if self.gpu_log:
+            if calculate_avg_gpu_usage(self.gpu_log):
+                print()
+                print(
+                    f"Average GPU Usage: {calculate_avg_gpu_usage(self.gpu_log):.3f} %"
+                )
 
-    def log(self, image_index, total_length, infer_time):
+        if self.cpu_log:
+            if calculate_avg_cpu_usage(self.cpu_log):
+                print(
+                    f"Average CPU Usage: {calculate_avg_cpu_usage(self.cpu_log):.3f} %"
+                )
+
+    def log(self, infer_time):
         self.time_records.append([infer_time])
-        print(
-            f"\r[{image_index} / {total_length}] | Inference Time: {infer_time:.3f} ms\033[K",
-            end="",
-            flush=True,
-        )
 
 
-""" setting tracker """
-tracker_args = argparse.Namespace()
-tracker_args.track_thresh = 0.5
-tracker_args.track_buffer = 30
-tracker_args.mot20 = False
-tracker_args.match_thresh = 0.8
-tracker = BYTETracker(tracker_args)
-
-
-def infer_image(client, model, input_path, output_path, model_shape, data_type):
+def infer_image(
+    client, model, input_path, output_path, model_shape, data_type, tracker
+):
     d_type = {"FP16": np.float16, "FP32": np.float32}[data_type]
     origin_img = cv2.imread(input_path).astype(np.float32)
     image_byte = cv2.imencode(".jpg", origin_img)[1].tobytes()
@@ -197,16 +206,21 @@ def infer_image(client, model, input_path, output_path, model_shape, data_type):
         class_id = res_copy[:, 0]
         score = res_copy[:, 1]
         box_coord = res_copy[:, 2:6]
-        bytetrack_input = np.hstack([box_coord, score.reshape(-1, 1)])
-        bytetrack_output = tracker.update(bytetrack_input)
-        _box_coord = np.array([bo.tlbr for bo in bytetrack_output])
-        _score = np.array([bo.score for bo in bytetrack_output])
-        _class_id = np.array([bo.track_id for bo in bytetrack_output])
+        track_id = None
+        if tracker:
+            bytetrack_input = np.hstack([box_coord, score.reshape(-1, 1)])
+            bytetrack_output = tracker.update(bytetrack_input)
+            score_box_dict = dict((bo.score, bo.tlbr) for bo in bytetrack_output)
+            box_coord = [score_box_dict[k] for k in score if k in score_box_dict]
+            score_track_dict = dict((bo.score, bo.track_id) for bo in bytetrack_output)
+            track_id = [score_track_dict[k] for k in score if k in score_track_dict]
+
         origin_img = vis(
             origin_img,
-            _box_coord,
-            _score,
-            _class_id,
+            box_coord,
+            score,
+            class_id,
+            track_id,
             conf=0.3,
             class_names=COCO_CLASSES,
         )
@@ -261,7 +275,8 @@ def main():
     args = make_parser().parse_args()
     client = grpcclient.InferenceServerClient(url=args.url)
     model_shape = tuple(map(int, args.model_shape.split(",")))
-    logger = PerformanceLogger() if args.logging else None
+    logger = PerformanceLogger() if args.logger else None
+    tracker = BYTETracker(tracker_args) if args.tracker else None
 
     if not (
         client.is_server_live()
@@ -295,12 +310,24 @@ def main():
 
         for image_index, image_path in enumerate(image_files, start=1):
             infer_time = infer_image(
-                client, args.model, image_path, output_path, model_shape, args.data_type
+                client,
+                args.model,
+                image_path,
+                output_path,
+                model_shape,
+                args.data_type,
+                tracker,
             )
             total_infer_time += infer_time
 
+            print(
+                f"\r[{image_index} / {len(image_files)}] | Inference Time: {infer_time:.3f} ms\033[K",
+                end="",
+                flush=True,
+            )
+
             if logger:
-                logger.log(image_index, len(image_files), infer_time)
+                logger.log(infer_time)
 
         if logger:
             logger.stop_logging()
