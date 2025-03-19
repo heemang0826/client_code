@@ -61,7 +61,7 @@ def make_parser():
 
     # 기타 옵션
     parser.add_argument("--logger", action="store_true")
-    parser.add_argument("--tracker", action="store_true", default=True)
+    parser.add_argument("--tracker", action="store_true")
 
     return parser
 
@@ -138,9 +138,8 @@ class PerformanceLogger:
 
         if self.gpu_log:
             if calculate_avg_gpu_usage(self.gpu_log):
-                print()
                 print(
-                    f"Average GPU Usage: {calculate_avg_gpu_usage(self.gpu_log):.3f} %"
+                    f"\nAverage GPU Usage: {calculate_avg_gpu_usage(self.gpu_log):.3f} %"
                 )
 
         if self.cpu_log:
@@ -358,7 +357,7 @@ def main():
             logger.stop_logging()
 
         # print(f"Avg preprocess time: {total_preproc_time / len(image_files):.3f} ms")
-        print(f"Avg inference time: {total_infer_time / len(image_files):.3f} ms")
+        print(f"\nAvg inference time: {total_infer_time / len(image_files):.3f} ms")
         # print(f"Avg postprocess time: {total_postproc_time / len(image_files):.3f} ms")
         if tracker:
             print(f"Avg tracking time: {total_track_time / len(image_files):.3f} ms")
