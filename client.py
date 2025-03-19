@@ -50,7 +50,7 @@ def make_parser():
     # 데이터 및 경로 관련
     parser.add_argument(
         "--input_path",
-        default=f"{home_dir}/client_code/data/clobot_office_pallet_pod_1459/office_1/image",
+        default=f"{home_dir}/client_code/data/test",
     )
     parser.add_argument("--output_path", default="test")
 
