@@ -6,14 +6,13 @@ import subprocess
 import threading
 import time
 from datetime import datetime
-from dotenv import load_dotenv
 
 import cv2
 import numpy as np
 import tritonclient.grpc as grpcclient
+from dotenv import load_dotenv
 
 from tracker.byte_tracker import BYTETracker
-
 from utils.camera_api import SensorRealsense
 from utils.classes import COCO_CLASSES
 from utils.tools import (
@@ -26,7 +25,6 @@ from utils.tools import (
     preprocess,
 )
 from utils.visualize import vis
-
 
 TRITON_URL = "192.168.105.190:8001"
 OVMS_URL = "192.168.105.194:9000"
@@ -54,7 +52,7 @@ def make_parser():
         "--input_path",
         default=f"{home_dir}/client_code/data/clobot_office_pallet_pod_1459/office_1/image",
     )
-    parser.add_argument("--output_path", default="temp")
+    parser.add_argument("--output_path", default="test")
 
     # 모델 및 추론 설정
     parser.add_argument("--model_shape", default="416,416")
@@ -62,7 +60,7 @@ def make_parser():
     parser.add_argument("--data_type", choices=["FP16", "FP32"], default="FP32")
 
     # 기타 옵션
-    parser.add_argument("--logger", action="store_true", default=True)
+    parser.add_argument("--logger", action="store_true")
     parser.add_argument("--tracker", action="store_true", default=True)
 
     return parser
@@ -202,18 +200,22 @@ def infer_image(
     #     )
     # postproc_e = time.time()
 
+    track_s, track_e = 0, 0
+    track_id = None
+
     if len(res_copy) != 0:
         class_id = res_copy[:, 0]
         score = res_copy[:, 1]
         box_coord = res_copy[:, 2:6]
-        track_id = None
         if tracker:
+            track_s = time.time()
             bytetrack_input = np.hstack([box_coord, score.reshape(-1, 1)])
             bytetrack_output = tracker.update(bytetrack_input)
             score_box_dict = dict((bo.score, bo.tlbr) for bo in bytetrack_output)
             box_coord = [score_box_dict[k] for k in score if k in score_box_dict]
             score_track_dict = dict((bo.score, bo.track_id) for bo in bytetrack_output)
             track_id = [score_track_dict[k] for k in score if k in score_track_dict]
+            track_e = time.time()
 
         origin_img = vis(
             origin_img,
@@ -228,7 +230,10 @@ def infer_image(
     output_path = os.path.join(output_path, os.path.basename(input_path))
     cv2.imwrite(output_path, origin_img)
 
-    return (infer_e - infer_s) * 1000
+    if tracker:
+        return (infer_e - infer_s) * 1000, (track_e - track_s) * 1000
+    else:
+        return (infer_e - infer_s) * 1000
 
 
 def infer_camera(client, model_name, input, model_shape, data_type):
@@ -307,24 +312,44 @@ def main():
         # total_preproc_time = 0
         total_infer_time = 0
         # total_postproc_time = 0
+        total_track_time = 0
 
         for image_index, image_path in enumerate(image_files, start=1):
-            infer_time = infer_image(
-                client,
-                args.model,
-                image_path,
-                output_path,
-                model_shape,
-                args.data_type,
-                tracker,
-            )
-            total_infer_time += infer_time
+            if tracker:
+                infer_time, track_time = infer_image(
+                    client,
+                    args.model,
+                    image_path,
+                    output_path,
+                    model_shape,
+                    args.data_type,
+                    tracker,
+                )
+                total_infer_time += infer_time
+                total_track_time += track_time
 
-            print(
-                f"\r[{image_index} / {len(image_files)}] | Inference Time: {infer_time:.3f} ms\033[K",
-                end="",
-                flush=True,
-            )
+                print(
+                    f"\r[{image_index} / {len(image_files)}] | Inference Time: {infer_time:.3f} ms | Tracking Time: {track_time:.3f} ms\033[K",
+                    end="",
+                    flush=True,
+                )
+            else:
+                infer_time = infer_image(
+                    client,
+                    args.model,
+                    image_path,
+                    output_path,
+                    model_shape,
+                    args.data_type,
+                    tracker,
+                )
+                total_infer_time += infer_time
+
+                print(
+                    f"\r[{image_index} / {len(image_files)}] | Inference Time: {infer_time:.3f} ms\033[K",
+                    end="",
+                    flush=True,
+                )
 
             if logger:
                 logger.log(infer_time)
@@ -335,6 +360,8 @@ def main():
         # print(f"Avg preprocess time: {total_preproc_time / len(image_files):.3f} ms")
         print(f"Avg inference time: {total_infer_time / len(image_files):.3f} ms")
         # print(f"Avg postprocess time: {total_postproc_time / len(image_files):.3f} ms")
+        if tracker:
+            print(f"Avg tracking time: {total_track_time / len(image_files):.3f} ms")
 
     elif args.infer_mode == "cam":
         sensor = SensorRealsense()
