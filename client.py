@@ -32,12 +32,12 @@ OVMS_URL = "192.168.105.194:9000"
 home_dir = os.path.expanduser("~")
 current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-load_dotenv("tracker_config.env")
+load_dotenv("./tracker/tracker_config.env")
 tracker_args = argparse.Namespace()
-tracker_args.track_thresh = float(os.getenv("TRACK_THRESH", 0.5))
-tracker_args.track_buffer = int(os.getenv("TRACK_BUFFER", 30))
-tracker_args.mot20 = os.getenv("MOT20", "False").lower() == "true"
-tracker_args.match_thresh = float(os.getenv("MATCH_THRESH", 0.7))
+tracker_args.track_thresh = float(os.getenv("TRACK_THRESH"))
+tracker_args.track_buffer = int(os.getenv("TRACK_BUFFER"))
+tracker_args.mot20 = os.getenv("MOT20", "False").lower()
+tracker_args.match_thresh = float(os.getenv("MATCH_THRESH"))
 
 
 def make_parser():
@@ -170,11 +170,9 @@ def infer_image(
     # preproc_e = time.time()
 
     infer_s = time.time()
-    res = client.infer(model_name=model, inputs=inputs, outputs=[outputs])
+    result = client.infer(model_name=model, inputs=inputs, outputs=[outputs])
+    result = result.as_numpy("output_results").astype(d_type)
     infer_e = time.time()
-
-    res = res.as_numpy("output_results")
-    res_copy = np.copy(res).astype(d_type)
 
     # postproc_s = time.time()
     # pred = postprocess(res_copy, model_shape)[0]
@@ -202,18 +200,21 @@ def infer_image(
     track_s, track_e = 0, 0
     track_id = None
 
-    if len(res_copy) != 0:
-        class_id = res_copy[:, 0]
-        score = res_copy[:, 1]
-        box_coord = res_copy[:, 2:6]
+    if result is not None:
+        class_id = result[:, 0]
+        score = result[:, 1]
+        box_coord = result[:, 2:6]
+
         if tracker:
             track_s = time.time()
-            bytetrack_input = np.hstack([box_coord, score.reshape(-1, 1)])
-            bytetrack_output = tracker.update(bytetrack_input)
-            score_box_dict = dict((bo.score, bo.tlbr) for bo in bytetrack_output)
-            box_coord = [score_box_dict[k] for k in score if k in score_box_dict]
-            score_track_dict = dict((bo.score, bo.track_id) for bo in bytetrack_output)
-            track_id = [score_track_dict[k] for k in score if k in score_track_dict]
+            bytetrack_result = tracker.update(result)
+            if bytetrack_result:
+                box_coord, score, class_id, track_id = zip(
+                    *[
+                        (br.tlbr, br.score, br.class_id, br.track_id)
+                        for br in bytetrack_result
+                    ]
+                )
             track_e = time.time()
 
         origin_img = vis(
@@ -313,7 +314,7 @@ def main():
         # total_postproc_time = 0
         total_track_time = 0
 
-        for image_index, image_path in enumerate(image_files, start=1):
+        for image_index, image_path in enumerate(image_files[56:], start=1):
             if tracker:
                 infer_time, track_time = infer_image(
                     client,
