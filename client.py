@@ -314,7 +314,7 @@ def main():
         # total_postproc_time = 0
         total_track_time = 0
 
-        for image_index, image_path in enumerate(image_files[56:], start=1):
+        for image_index, image_path in enumerate(image_files, start=1):
             if tracker:
                 infer_time, track_time = infer_image(
                     client,
