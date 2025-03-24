@@ -12,7 +12,9 @@ import numpy as np
 import tritonclient.grpc as grpcclient
 from dotenv import load_dotenv
 
-from tracker.byte_tracker import BYTETracker
+from bytetrack.byte_tracker import BYTETracker
+from dataclass.detect_results import DetectionResults
+from dataclass.track_results import TrackResults
 from utils.camera_api import SensorRealsense
 from utils.classes import COCO_CLASSES
 from utils.tools import (
@@ -32,13 +34,6 @@ OVMS_URL = "192.168.105.194:9000"
 home_dir = os.path.expanduser("~")
 current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-load_dotenv("./tracker/tracker_config.env")
-tracker_args = argparse.Namespace()
-tracker_args.track_thresh = float(os.getenv("TRACK_THRESH"))
-tracker_args.track_buffer = int(os.getenv("TRACK_BUFFER"))
-tracker_args.mot20 = os.getenv("MOT20", "False").lower()
-tracker_args.match_thresh = float(os.getenv("MATCH_THRESH"))
-
 
 def make_parser():
     parser = argparse.ArgumentParser()
@@ -48,10 +43,7 @@ def make_parser():
     parser.add_argument("--model", default="ensemble_yolox_tiny_coco80")
 
     # 데이터 및 경로 관련
-    parser.add_argument(
-        "--input_path",
-        default=f"{home_dir}/client_code/data/test",
-    )
+    parser.add_argument("--input_path", default=f"{home_dir}/client_code/data/test")
     parser.add_argument("--output_path", default="test")
 
     # 모델 및 추론 설정
@@ -127,25 +119,19 @@ class PerformanceLogger:
 
         with open(self.time_log, "w", newline="") as file:
             writer = csv.writer(file)
-            writer.writerow(
-                [
-                    # "Preprocessing_Time(ms)",
-                    "Inference_Time(ms)",
-                    # "Postprocessing_Time(ms)",
-                ]
-            )
+            writer.writerow(["Inference_Time(ms)"])
             writer.writerows(self.time_records)
 
         if self.gpu_log:
             if calculate_avg_gpu_usage(self.gpu_log):
                 print(
-                    f"\nAverage GPU Usage: {calculate_avg_gpu_usage(self.gpu_log):.3f} %"
+                    f"[✓] Average GPU Usage: {calculate_avg_gpu_usage(self.gpu_log):.3f} %"
                 )
 
         if self.cpu_log:
             if calculate_avg_cpu_usage(self.cpu_log):
                 print(
-                    f"Average CPU Usage: {calculate_avg_cpu_usage(self.cpu_log):.3f} %"
+                    f"[✓] Average CPU Usage: {calculate_avg_cpu_usage(self.cpu_log):.3f} %"
                 )
 
     def log(self, infer_time):
@@ -156,7 +142,7 @@ def infer_image(
     client, model, input_path, output_path, model_shape, data_type, tracker
 ):
     d_type = {"FP16": np.float16, "FP32": np.float32}[data_type]
-    origin_img = cv2.imread(input_path).astype(np.float32)
+    origin_img = cv2.imread(input_path).astype(np.uint8)
     image_byte = cv2.imencode(".jpg", origin_img)[1].tobytes()
     img_bt = np.array([image_byte], dtype=np.object_)
 
@@ -164,71 +150,42 @@ def infer_image(
     inputs[0].set_data_from_numpy(img_bt)
     outputs = grpcclient.InferRequestedOutput("output_results")
 
-    # preproc_s = time.time()
-    # img, ratio = preprocess(origin_img, model_shape)
-    # img = img[None, :, :, :].astype(d_type)
-    # preproc_e = time.time()
-
     infer_s = time.time()
-    result = client.infer(model_name=model, inputs=inputs, outputs=[outputs])
-    result = result.as_numpy("output_results").astype(d_type)
+    infer_result = client.infer(model_name=model, inputs=inputs, outputs=[outputs])
+    infer_result = infer_result.as_numpy("output_results").astype(d_type)
     infer_e = time.time()
 
-    # postproc_s = time.time()
-    # pred = postprocess(res_copy, model_shape)[0]
-    # boxes, scores = pred[:, :4], pred[:, 4:5] * pred[:, 5:]
-    # boxes_xyxy = np.ones_like(boxes)
-    # boxes_xyxy[:, 0] = boxes[:, 0] - boxes[:, 2] / 2.0
-    # boxes_xyxy[:, 1] = boxes[:, 1] - boxes[:, 3] / 2.0
-    # boxes_xyxy[:, 2] = boxes[:, 0] + boxes[:, 2] / 2.0
-    # boxes_xyxy[:, 3] = boxes[:, 1] + boxes[:, 3] / 2.0
-    # boxes_xyxy /= ratio
-
-    # dets = multiclass_nms(boxes_xyxy, scores, nms_thr=0.45, score_thr=0.3)
-    # if dets is not None:
-    #     final_boxes, final_scores, final_cls_inds = dets[:, :4], dets[:, 4], dets[:, 5]
-    #     origin_img = vis(
-    #         origin_img,
-    #         final_boxes,
-    #         final_scores,
-    #         final_cls_inds,
-    #         conf=0.3,
-    #         class_names=COCO_CLASSES,
-    #     )
-    # postproc_e = time.time()
+    detect_result = DetectionResults.from_array(infer_result)
+    print(detect_result)
 
     track_s, track_e = 0, 0
     track_id = None
 
-    if result is not None:
-        class_id = result[:, 0]
-        score = result[:, 1]
-        box_coord = result[:, 2:6]
+    if detect_result:
+        class_id = [det.class_id for det in detect_result]
+        score = [det.score for det in detect_result]
+        box_coord = [(det.x1, det.y1, det.x2, det.y2) for det in detect_result]
 
         if tracker:
             track_s = time.time()
-            bytetrack_result = tracker.update(result)
-            if bytetrack_result:
-                box_coord, score, class_id, track_id = zip(
-                    *[
-                        (br.tlbr, br.score, br.class_id, br.track_id)
-                        for br in bytetrack_result
-                    ]
-                )
+            track_result = tracker.update(
+                class_id=class_id, score=score, box_coord=box_coord
+            )
             track_e = time.time()
 
-        origin_img = vis(
-            origin_img,
-            box_coord,
-            score,
-            class_id,
-            track_id,
-            conf=0.3,
-            class_names=COCO_CLASSES,
-        )
+            final_result = TrackResults.from_list(track_result)
+            print(final_result)
+
+            if final_result:
+                origin_img = vis(origin_img, final_result)
+            else:
+                origin_img = vis(origin_img, class_id, track_id, score, box_coord)
+
+        else:
+            origin_img = vis(origin_img, class_id, track_id, score, box_coord)
 
     output_path = os.path.join(output_path, os.path.basename(input_path))
-    cv2.imwrite(output_path, origin_img)
+    cv2.imwrite(output_path, origin_img.astype(np.uint8))
 
     if tracker:
         return (infer_e - infer_s) * 1000, (track_e - track_s) * 1000
@@ -281,6 +238,13 @@ def main():
     client = grpcclient.InferenceServerClient(url=args.url)
     model_shape = tuple(map(int, args.model_shape.split(",")))
     logger = PerformanceLogger() if args.logger else None
+
+    load_dotenv("./bytetrack/tracker_config.env")
+    tracker_args = argparse.Namespace()
+    tracker_args.track_thresh = float(os.getenv("TRACK_THRESH"))
+    tracker_args.track_buffer = int(os.getenv("TRACK_BUFFER"))
+    tracker_args.mot20 = os.getenv("MOT20", "False").lower()
+    tracker_args.match_thresh = float(os.getenv("MATCH_THRESH"))
     tracker = BYTETracker(tracker_args) if args.tracker else None
 
     if not (
@@ -309,12 +273,11 @@ def main():
         if logger:
             logger.start_logging()
 
-        # total_preproc_time = 0
         total_infer_time = 0
-        # total_postproc_time = 0
         total_track_time = 0
 
         for image_index, image_path in enumerate(image_files, start=1):
+            print(f"[{image_index} / {len(image_files)}]\n")
             if tracker:
                 infer_time, track_time = infer_image(
                     client,
@@ -325,14 +288,16 @@ def main():
                     args.data_type,
                     tracker,
                 )
+
                 total_infer_time += infer_time
                 total_track_time += track_time
 
                 print(
-                    f"\r[{image_index} / {len(image_files)}] | Inference Time: {infer_time:.3f} ms | Tracking Time: {track_time:.3f} ms\033[K",
-                    end="",
+                    f"\rInference Time: {infer_time:.3f} ms | Tracking Time: {track_time:.3f} ms\033[K",
                     flush=True,
                 )
+                print()
+
             else:
                 infer_time = infer_image(
                     client,
@@ -343,25 +308,35 @@ def main():
                     args.data_type,
                     tracker,
                 )
+
                 total_infer_time += infer_time
 
                 print(
-                    f"\r[{image_index} / {len(image_files)}] | Inference Time: {infer_time:.3f} ms\033[K",
-                    end="",
+                    f"\rInference Time: {infer_time:.3f} ms\033[K",
                     flush=True,
                 )
+                print()
 
             if logger:
                 logger.log(infer_time)
 
+        if tracker:
+            print(f"[✓] Inference complete")
+            print(
+                f"[✓] Avg detection time: {total_infer_time / len(image_files):.3f} ms"
+            )
+            print(
+                f"[✓] Avg tracking time: {total_track_time / len(image_files):.3f} ms"
+            )
+
+        else:
+            print(f"[✓] Inference complete.")
+            print(
+                f"[✓] Avg detection time: {total_infer_time / len(image_files):.3f} ms"
+            )
+
         if logger:
             logger.stop_logging()
-
-        # print(f"Avg preprocess time: {total_preproc_time / len(image_files):.3f} ms")
-        print(f"\nAvg inference time: {total_infer_time / len(image_files):.3f} ms")
-        # print(f"Avg postprocess time: {total_postproc_time / len(image_files):.3f} ms")
-        if tracker:
-            print(f"Avg tracking time: {total_track_time / len(image_files):.3f} ms")
 
     elif args.infer_mode == "cam":
         sensor = SensorRealsense()

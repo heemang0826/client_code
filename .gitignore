@@ -1,12 +1,14 @@
 .vscode/
+__pycache__/
 data/
 log/
 output/
-__pycache__/
 
-*.png
-*jpg
-*.jpeg
 *.csv
-*.txt
+*.jpeg
+*.jpg
+*.png
 *.pyc
+*.txt
+
+!requirements.txt
