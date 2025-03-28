@@ -7,6 +7,7 @@ output/
 *.csv
 *.jpeg
 *.jpg
+*.mp4
 *.png
 *.pyc
 *.txt

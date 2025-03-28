@@ -44,7 +44,7 @@ def make_parser():
 
     # 데이터 및 경로 관련
     parser.add_argument("--input_path", default=f"{home_dir}/client_code/data/test")
-    parser.add_argument("--output_path", default="test")
+    parser.add_argument("--output_path", default=f"{home_dir}/client_code/output/test")
 
     # 모델 및 추론 설정
     parser.add_argument("--model_shape", default="416,416")
@@ -259,8 +259,7 @@ def main():
     print("model_metadata:", model_metadata)
 
     if args.infer_mode == "img":
-        output_path = f"./output/{args.output_path}"
-        mkdir(output_path)
+        mkdir(args.output_path)
 
         image_files = sorted(
             [
@@ -283,7 +282,7 @@ def main():
                     client,
                     args.model,
                     image_path,
-                    output_path,
+                    args.output_path,
                     model_shape,
                     args.data_type,
                     tracker,
@@ -303,7 +302,7 @@ def main():
                     client,
                     args.model,
                     image_path,
-                    output_path,
+                    args.output_path,
                     model_shape,
                     args.data_type,
                     tracker,
@@ -337,6 +336,18 @@ def main():
 
         if logger:
             logger.stop_logging()
+
+        command = [
+            "ffmpeg",
+            "-r",
+            "20",
+            "-i",
+            f"{args.output_path}/%06d.png",
+            "-c:v",
+            "libx264",
+            f"{args.output_path}/test.mp4",
+        ]
+        subprocess.run(command, check=True)
 
     elif args.infer_mode == "cam":
         sensor = SensorRealsense()
